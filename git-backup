@@ -1,0 +1,221 @@
+#!/usr/bin/python
+import subprocess, os, time, sys
+
+
+# Look in the config files to figure out where to back up to.
+# Chceck backup.path to get us the base path for the backup repository
+process = subprocess.Popen(["git", "config", "backup.path"], stdout=subprocess.PIPE)
+if process.wait():
+	backup_path = "/backups/gitrepos/"
+else:
+	backup_path = process.stdout.readline()[:-1]
+
+# Check backup.name to determine the name of our backup repository
+process = subprocess.Popen(["git", "config", "backup.name"], stdout=subprocess.PIPE)
+if process.wait():
+	# Hmm.  We don't have a backup name stored.
+	# Default to our current directory name, and place that in the config file.
+	while os.getcwd() != "/":
+		if os.path.isdir(os.getcwd() + "/.git"):
+			# If we have found a .git folder, we are at the root of the repository.
+			# Take the directory name that we are in as the name.
+			repos_name = os.getcwd().split("/")[-1]
+			backup_path = backup_path + repos_name
+
+			# Save it in the config file so it doesn't need to be found next time.
+			if subprocess.call(["git", "config", "backup.name", repos_name]):
+				print "Couldn't set the default name to back up as."
+			else:
+				print "Setting the backup.name config value to %s for next time." % (repos_name, )
+
+			break
+		else:
+			os.chdir("../")
+else:
+	# The name of the repository has been stored, so we can just use it.  Strip out the '\n' at the end.
+	backup_path = backup_path + process.stdout.readline()[:-1]
+
+# TODO: Write a manpage.
+if len(sys.argv) > 1:
+	print "Usage:"
+	print "  Backups the repository to %s" % (backup_path,)
+	print "  This is configurable using backup.name and backup.path"
+	sys.exit(0)
+
+print "Backing up to %s" % (backup_path, )
+try:
+	os.chdir(backup_path)
+except:
+	print "Couldn't find the repository."
+	sys.exit(1)
+
+# Backup which branch we are on, so when we mess it up, we can get back to there.
+# We will find which branch we are on by parsing the git branch command's output
+process = subprocess.Popen(["git", "branch"], stdout=subprocess.PIPE)
+for line in process.stdout:
+	# Look for the branch that we are on.  It will have a * at the beginning of the line.
+	if line[0] == "*":
+		previous_commit = line[2:-1]
+		# Hmm.  We aren't on a branch, so use git show on HEAD to find where we are.
+		if previous_commit == "(no branch)":
+			previous_commit = subprocess.Popen(["git", "show", "--pretty=oneline", "HEAD", "-s"],
+								stdout=subprocess.PIPE).stdout.readline().split(" ")[0]
+
+# Grab a list of all remote sources.
+# We need this list to do a fetch on to fetch all new branches
+origins = []
+process = subprocess.Popen(["git", "remote", "show"], stdout=subprocess.PIPE)
+for line in process.stdout:
+	origins.append(line[:-1])
+
+if process.wait():
+	print "Couldn't get a listing of all origins."
+	print "Call git remote show in the backup repository to debug this error."
+	os.exit(1)
+
+# Figure out which repositories/branches we are following, so we can back them up.
+process = subprocess.Popen(["git", "branch", "-r"], stdout=subprocess.PIPE)
+branches_to_check_against = []
+current_commit = None
+for line in process.stdout:
+	branch = line[2:-1]
+	# Check the commit SHA of origin/master to compare it with the commit we are currentlty on.
+	# Update the current commit if we haven't already found a match
+	if current_commit != previous_commit:
+		current_commit = subprocess.Popen(["git", "show", "--pretty=oneline", branch, "-s"],
+							stdout=subprocess.PIPE).stdout.readline().split(" ")[0]
+		current_commit_branch = branch
+
+# Fetch all the remote origins, so we get all the new branches.
+# Also, prune them so we don't have stale branches lying around.
+for origin in origins:
+	print "Fetching", origin
+	if subprocess.call(["git", "fetch", origin]):
+		print "Couldn't fetch updates from %s" % (origin,)
+		os.exit(1)
+	if subprocess.call(["git", "remote", "prune", origin]):
+		print "Couldn't prune stale branches from", origin
+		os.exit(1)
+
+# Now that we have the latest branch listings,
+# figure out which repositories/branches we are following, so we can back them up.
+# Save them into branches_to_backup
+process = subprocess.Popen(["git", "branch", "-r"], stdout=subprocess.PIPE)
+branches_to_backup = []
+backup_latest_revision = dict()
+for line in process.stdout:
+	branches_to_backup.append(line[2:-1])
+	# The tuple represents the SHA, year, month, day, revision
+	backup_latest_revision[line[2:-1]] = (None, 0, 0, 0, 0)
+
+print "Backing up:", branches_to_backup
+
+# Find the largest tag number for today.  We can then use that to give everything the same extension.
+current_backup_date = time.strftime("-%Y-%m-%d")
+process = subprocess.Popen(["git", "tag"], stdout=subprocess.PIPE)
+backup_number = 1
+for line in process.stdout:
+	# Only look for tags with the backup/ start.
+	if "backup/" == line[0:7]:
+		# Warning: We are assuming that the branch name doesn't have a '-' in it.
+		# If it did, the split would fail.
+		latest_SHA, latest_year, latest_month, latest_day, latest_revision = backup_latest_revision[line[7:].split("-")[0]]
+		dates = line[:-1].split("-")
+		year = int(dates[1])
+		month = int(dates[2])
+		day = int(dates[3])
+		if len(dates) >= 5:
+			revision = int(dates[4])
+		else:
+			revision = 1
+
+		# Check if the year, month, or day is later (or the same as) the current one.
+		# If it is, we have found a later revision and should call that the latest.
+		if year >= latest_year:
+			latest_year = year
+			latest_month = month
+			latest_day = day
+			latest_revision = revision
+			latest_SHA = subprocess.Popen(["git", "log", "--pretty=format:%H", "-1", line[:-1]],
+							stdout=subprocess.PIPE).stdout.readline()
+			# Save what we are claiming is the latest back out to the dictionary.
+			backup_latest_revision[line[7:].split("-")[0]] = (latest_SHA, latest_year, latest_month, latest_day, latest_revision)
+		elif month >= latest_month:
+			latest_month = month
+			latest_day = day
+			latest_revision = revision
+			latest_SHA = subprocess.Popen(["git", "log", "--pretty=format:%H", "-1", line[:-1]],
+							stdout=subprocess.PIPE).stdout.readline()
+			# Save what we are claiming is the latest back out to the dictionary.
+			backup_latest_revision[line[7:].split("-")[0]] = (latest_SHA, latest_year, latest_month, latest_day, latest_revision)
+		elif day >= latest_day:
+			latest_day = day
+			latest_revision = revision
+			latest_SHA = subprocess.Popen(["git", "log", "--pretty=format:%H", "-1", line[:-1]],
+							stdout=subprocess.PIPE).stdout.readline()
+			# Save what we are claiming is the latest back out to the dictionary.
+			backup_latest_revision[line[7:].split("-")[0]] = (latest_SHA, latest_year, latest_month, latest_day, latest_revision)
+		elif revision >= latest_revision:
+			latest_revision = revision
+			latest_SHA = subprocess.Popen(["git", "log", "--pretty=format:%H", "-1", line[:-1]],
+							stdout=subprocess.PIPE).stdout.readline()
+			# Save what we are claiming is the latest back out to the dictionary.
+			backup_latest_revision[line[7:].split("-")[0]] = (latest_SHA, latest_year, latest_month, latest_day, latest_revision)
+
+		
+		if current_backup_date in line:
+			# Grab the part of the line that is after the date, not including the '\n' at the end.
+			tline = line[line.find(current_backup_date) + len(current_backup_date):-1]
+			if len(tline) == 0:
+				# There is no extension, so the next extension should be at least 2
+				backup_number = max(backup_number, 2)
+			else:
+				# There is an extension!  The next one should now be at least one more than this one.
+				backup_number = max(backup_number, int(tline[1:]) + 1)
+
+# If this isn't the first time we have backed up today, add the extension.
+if backup_number > 1:
+	current_backup_date = current_backup_date + "-%d" % (backup_number,)
+
+for branch in branches_to_backup:
+	origin, branch_name = branch.split("/")
+
+	# Fetch what's in origin into remotes/origin/branch_name to be used.
+	# + means do it even if it isn't a fast-forward fetch.
+	# This would happen if someone did a rebase, or something like that.
+	if subprocess.call(["git", "fetch", origin, "+" + branch_name + ":remotes/" + branch]):
+		print "Couldn't the fetch."
+		os.exit(1)
+	
+	# Checkout the branch
+	if subprocess.call(["git", "checkout", "-q", branch]):
+		print "Couldn't checkout branch to backup."
+		os.exit(1)
+	
+	current_SHA = subprocess.Popen(["git", "show", "--pretty=oneline", branch, "-s"],
+					stdout=subprocess.PIPE).stdout.readline().split(" ")[0]
+
+	# Check the SHA of the latest revision we found using the backup tags.
+	# If it's the same as what we would tag right now, don't bother tagging again.
+	# This will prevent excessive tags from showing up.
+	if current_SHA != backup_latest_revision[branch][0]:
+		# Tag the branch something like backup/origin/HEAD-2010-01-01
+		if subprocess.call(["git", "tag", "backup/" + branch + current_backup_date, "-m", "Backup of %s on %s\n%s" % (os.uname()[1], time.strftime("%c"), " ".join(os.uname()))]):
+			print "Couldn't do an incremental backup.  Check output for more errors."
+			os.exit(1)
+		else:
+			print "Tagged as backup/%s%s" % (branch, current_backup_date)
+	else:
+		print "Not backing up %s because it hasn't changed." % (branch,)
+
+# Restore the HEAD in the repository to either what it was, or what it looks like the user was trying to do.
+# For example, if the user used to be on origin/HEAD, then check out the new origin/HEAD for him, rather than leaving him at the now obsolete origin/HEAD
+if current_commit == previous_commit:
+	print "Looks like you are trying to track " + current_commit_branch + ".\nWe'll check out the latest " + current_commit_branch + " for you.\nPrevious commit was", previous_commit
+	if subprocess.call(["git", "checkout", current_commit_branch]):
+		print "Couldn't restore state of the repository"
+		os.exit(1)
+else:
+	if subprocess.call(["git", "checkout", previous_commit]):
+		print "Couldn't restore state of the repository"
+		os.exit(1)
