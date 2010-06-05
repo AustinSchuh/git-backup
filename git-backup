@@ -6,43 +6,66 @@ import subprocess, os, time, sys
 # Chceck backup.path to get us the base path for the backup repository
 process = subprocess.Popen(["git", "config", "backup.path"], stdout=subprocess.PIPE)
 if process.wait():
-	backup_path = "/backups/gitrepos/"
+	backup_base_path = backup_path = "/backups/gitrepos/"
 else:
-	backup_path = process.stdout.readline()[:-1]
+	backup_base_path = backup_path = process.stdout.readline()[:-1]
 
 # Check backup.name to determine the name of our backup repository
 process = subprocess.Popen(["git", "config", "backup.name"], stdout=subprocess.PIPE)
+
+# Walk down the tree until you either get to /, or find a directory with a .git in it.
+# This will give us the base repository path that we can use when initializing the backups.
+while os.getcwd() != "/":
+	if os.path.isdir(os.getcwd() + "/.git"):
+		bare_repository_path = os.getcwd() + "/.git"
+		# If we have found a .git folder, we are at the root of the repository.
+		# Take the directory name that we are in as the name.
+		repos_name = os.getcwd().split("/")[-1]
+		break
+	else:
+		os.chdir("../")
+if os.getcwd() == "/":
+	print "fatal: Not a git repository"
+	sys.exit(1)
+
 if process.wait():
 	# Hmm.  We don't have a backup name stored.
 	# Default to our current directory name, and place that in the config file.
-	while os.getcwd() != "/":
-		if os.path.isdir(os.getcwd() + "/.git"):
-			# If we have found a .git folder, we are at the root of the repository.
-			# Take the directory name that we are in as the name.
-			repos_name = os.getcwd().split("/")[-1]
-			backup_path = backup_path + repos_name
 
-			# Save it in the config file so it doesn't need to be found next time.
-			if subprocess.call(["git", "config", "backup.name", repos_name]):
-				print "Couldn't set the default name to back up as."
-			else:
-				print "Setting the backup.name config value to %s for next time." % (repos_name, )
-
-			break
-		else:
-			os.chdir("../")
+	# Save it in the config file so it doesn't need to be found next time.
+	if subprocess.call(["git", "config", "backup.name", repos_name]):
+		print "Couldn't set the default name to back up as."
+	else:
+		print "Setting the backup.name config value to '%s' for next time." % (repos_name, )
 else:
 	# The name of the repository has been stored, so we can just use it.  Strip out the '\n' at the end.
-	backup_path = backup_path + process.stdout.readline()[:-1]
+	repos_name = process.stdout.readline()[:-1]
+
+backup_path = backup_base_path + repos_name
 
 # TODO: Write a manpage.
 if len(sys.argv) > 1:
-	print "Usage:"
-	print "  Backups the repository to %s" % (backup_path,)
-	print "  This is configurable using backup.name and backup.path"
-	sys.exit(0)
+	if sys.argv[1] != "init":
+		print "Usage:"
+		print "  Backups the repository to %s" % (backup_path,)
+		print "  This is configurable using backup.name and backup.path"
+		print " init:"
+		print "  Clones the current repository and gets it all set up to be automatically backed up by git-backup command."
+		sys.exit(0)
 
 print "Backing up to %s" % (backup_path, )
+
+if len(sys.argv) > 1:
+	if sys.argv[1] == "init":
+		try:
+			os.chdir(backup_base_path)
+		except:
+			print "Couldn't find the base directory."
+			sys.exit(1)
+
+		if subprocess.call(["git", "clone", "file://" + bare_repository_path, repos_name]):
+			print "Couldn't clone this repository"
+			sys.exit(1)
 try:
 	os.chdir(backup_path)
 except:
