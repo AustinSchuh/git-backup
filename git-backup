@@ -69,7 +69,8 @@ if len(sys.argv) > 1:
 try:
 	os.chdir(backup_path)
 except:
-	print "Couldn't find the repository."
+	print "fatal: Couldn't find the repository."
+	print "If you still need to create it, call git backup init."
 	sys.exit(1)
 
 # Backup which branch we are on, so when we mess it up, we can get back to there.
@@ -92,9 +93,9 @@ for line in process.stdout:
 	origins.append(line[:-1])
 
 if process.wait():
-	print "Couldn't get a listing of all origins."
+	print "fatal: Couldn't get a listing of all origins."
 	print "Call git remote show in the backup repository to debug this error."
-	os.exit(1)
+	sys.exit(1)
 
 # Figure out which repositories/branches we are following, so we can back them up.
 process = subprocess.Popen(["git", "branch", "-r"], stdout=subprocess.PIPE)
@@ -114,11 +115,11 @@ for line in process.stdout:
 for origin in origins:
 	print "Fetching", origin
 	if subprocess.call(["git", "fetch", origin]):
-		print "Couldn't fetch updates from %s" % (origin,)
-		os.exit(1)
+		print "fatal: Couldn't fetch updates from %s" % (origin,)
+		sys.exit(1)
 	if subprocess.call(["git", "remote", "prune", origin]):
-		print "Couldn't prune stale branches from", origin
-		os.exit(1)
+		print "fatal: Couldn't prune stale branches from", origin
+		sys.exit(1)
 
 # Now that we have the latest branch listings,
 # figure out which repositories/branches we are following, so we can back them up.
@@ -207,13 +208,13 @@ for branch in branches_to_backup:
 	# + means do it even if it isn't a fast-forward fetch.
 	# This would happen if someone did a rebase, or something like that.
 	if subprocess.call(["git", "fetch", origin, "+" + branch_name + ":remotes/" + branch]):
-		print "Couldn't the fetch."
-		os.exit(1)
+		print "fatal: Couldn't the fetch."
+		sys.exit(1)
 	
 	# Checkout the branch
 	if subprocess.call(["git", "checkout", "-q", branch]):
-		print "Couldn't checkout branch to backup."
-		os.exit(1)
+		print "fatal: Couldn't checkout branch to backup."
+		sys.exit(1)
 	
 	current_SHA = subprocess.Popen(["git", "show", "--pretty=oneline", branch, "-s"],
 					stdout=subprocess.PIPE).stdout.readline().split(" ")[0]
@@ -224,8 +225,8 @@ for branch in branches_to_backup:
 	if current_SHA != backup_latest_revision[branch][0]:
 		# Tag the branch something like backup/origin/HEAD-2010-01-01
 		if subprocess.call(["git", "tag", "backup/" + branch + current_backup_date, "-m", "Backup of %s on %s\n%s" % (os.uname()[1], time.strftime("%c"), " ".join(os.uname()))]):
-			print "Couldn't do an incremental backup.  Check output for more errors."
-			os.exit(1)
+			print "fatal: Couldn't do an incremental backup.  Check output for more errors."
+			sys.exit(1)
 		else:
 			print "Tagged as backup/%s%s" % (branch, current_backup_date)
 	else:
@@ -236,9 +237,9 @@ for branch in branches_to_backup:
 if current_commit == previous_commit:
 	print "Looks like you are trying to track " + current_commit_branch + ".\nWe'll check out the latest " + current_commit_branch + " for you.\nPrevious commit was", previous_commit
 	if subprocess.call(["git", "checkout", current_commit_branch]):
-		print "Couldn't restore state of the repository"
-		os.exit(1)
+		print "fatal: Couldn't restore state of the repository"
+		sys.exit(1)
 else:
 	if subprocess.call(["git", "checkout", previous_commit]):
-		print "Couldn't restore state of the repository"
-		os.exit(1)
+		print "fatal: Couldn't restore state of the repository"
+		sys.exit(1)
