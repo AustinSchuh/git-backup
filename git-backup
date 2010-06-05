@@ -60,12 +60,23 @@ if len(sys.argv) > 1:
 		try:
 			os.chdir(backup_base_path)
 		except:
-			print "Couldn't find the base directory."
+			print "fatal: Couldn't find the base directory."
 			sys.exit(1)
 
 		if subprocess.call(["git", "clone", "file://" + bare_repository_path, repos_name]):
-			print "Couldn't clone this repository"
+			print "fatal: Couldn't clone this repository"
 			sys.exit(1)
+		try:
+			os.chdir(backup_path)
+		except:
+			print "fatal: Couldn't find the repository."
+			print "The checkout must have failed."
+			sys.exit(1)
+
+		if subprocess.call(["git", "config", "backup.restorepath", bare_repository_path[:-5]]):
+			print "fatal: Couldn't set the default name to restore to."
+			sys.exit(1)
+
 try:
 	os.chdir(backup_path)
 except:
